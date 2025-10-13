@@ -91,9 +91,15 @@ module.exports = {
       const thumbnailUrl = `${apiBaseUrl}/images/${thumbnailFilename}`;
 
       // 將原始圖和縮圖寫入檔案系統
-      const originalImage = sharp(fileBuffer);
-      await originalImage.toFile(imagePath);
-      await originalImage.resize(128, 128).toFile(thumbnailPath);
+      // 使用 withMetadata() 保留 EXIF 資訊（包括 Orientation）
+      await sharp(fileBuffer)
+        .withMetadata()
+        .toFile(imagePath);
+      
+      await sharp(fileBuffer)
+        .resize(128, 128)
+        .withMetadata()
+        .toFile(thumbnailPath);
 
       // 建立 FHIR DocumentReference
       const documentReference = {
