@@ -57,49 +57,63 @@ module.exports = {
         });
       }
 
-      // 驗證檔案類型 (從 buffer 中讀取 magic numbers)
-      let metadata;
+      // 檔案大小
+      const fileSizeBytes = fileBuffer.length;
+
+      // 偵測是否為影像（透過 sharp 讀取 metadata）
+      let metadata = null;
+      let imageType = null;
+      let isImage = false;
       try {
         metadata = await sharp(fileBuffer).metadata();
+        imageType = metadata.format;
+        isImage = ['jpeg', 'png', 'gif', 'webp'].includes(imageType);
       } catch (unusedE) {
-        return res.badRequest({ success: false, err: { code: 'E_TYPE', message: '無法識別的圖片格式' } });
-      }
-
-      const imageType = metadata.format;
-      if (!['jpeg', 'png', 'gif', 'webp'].includes(imageType)) {
-        return res.badRequest({
-          success: false,
-          err: {
-            code: 'E_TYPE',
-            message: '檔案格式錯誤'
-          }
-        });
+        isImage = false;
       }
 
       // 取得檔案資訊
       const apiBaseUrl = sails.config.custom.apiBaseUrl;
       const fhirServerUrl = sails.config.custom.fhirServerUrl;
       const uniqueId = require('crypto').randomBytes(8).toString('hex');
-      const filenameFull = `${uniqueId}.${imageType}`;
-      const { name: fileName, ext: fileExt } = path.parse(filenameFull);
+      let filenameFull;
+      let fileName;
+      let fileExt;
+      if (isImage) {
+        filenameFull = `${uniqueId}.${imageType}`;
+        ({ name: fileName, ext: fileExt } = path.parse(filenameFull));
+      } else {
+        const originalExt = (path.extname(uploadedFiles[0].filename || '') || '').toLowerCase();
+        filenameFull = `${uniqueId}${originalExt}`;
+        ({ name: fileName, ext: fileExt } = path.parse(filenameFull));
+      }
       const imagePath = path.resolve(sails.config.appPath, 'assets/images', filenameFull);
       const imageUrl = `${apiBaseUrl}/images/${filenameFull}`;
 
       // 產生縮圖
-      const thumbnailFilename = `${fileName}_thumb${fileExt}`;
-      const thumbnailPath = path.resolve(sails.config.appPath, 'assets/images', thumbnailFilename);
-      const thumbnailUrl = `${apiBaseUrl}/images/${thumbnailFilename}`;
+      let thumbnailFilename = null;
+      let thumbnailPath = null;
+      let thumbnailUrl = null;
+      if (isImage) {
+        thumbnailFilename = `${fileName}_thumb${fileExt}`;
+        thumbnailPath = path.resolve(sails.config.appPath, 'assets/images', thumbnailFilename);
+        thumbnailUrl = `${apiBaseUrl}/images/${thumbnailFilename}`;
+      }
 
       // 將原始圖和縮圖寫入檔案系統
       // 使用 withMetadata() 保留 EXIF 資訊（包括 Orientation）
-      await sharp(fileBuffer)
-        .withMetadata()
-        .toFile(imagePath);
-      
-      await sharp(fileBuffer)
-        .resize(128, 128)
-        .withMetadata()
-        .toFile(thumbnailPath);
+      if (isImage) {
+        await sharp(fileBuffer)
+          .withMetadata()
+          .toFile(imagePath);
+
+        await sharp(fileBuffer)
+          .resize(128, 128)
+          .withMetadata()
+          .toFile(thumbnailPath);
+      } else {
+        await fs.promises.writeFile(imagePath, fileBuffer);
+      }
 
       // 建立 FHIR DocumentReference
       const documentReference = {
@@ -121,26 +135,39 @@ module.exports = {
             }
           ]
         },
-        content: [
-          {
-            attachment: {
-              contentType: `image/${imageType}`,
-              url: imageUrl,
-              size: metadata.size,
-              title: 'full-image',
-              creation: new Date().toISOString()
-            }
-          },
-          {
-            attachment: {
-              contentType: `image/${imageType}`,
-              url: thumbnailUrl,
-              title: 'thumbnail',
-              creation: new Date().toISOString()
-            }
-          }
-        ]
+        content: []
       };
+
+      if (isImage) {
+        documentReference.content.push({
+          attachment: {
+            contentType: `image/${imageType}`,
+            url: imageUrl,
+            size: fileSizeBytes,
+            title: 'full-image',
+            creation: new Date().toISOString()
+          }
+        });
+        documentReference.content.push({
+          attachment: {
+            contentType: `image/${imageType}`,
+            url: thumbnailUrl,
+            title: 'thumbnail',
+            creation: new Date().toISOString()
+          }
+        });
+      } else {
+        const mimeType = uploadedFiles[0].type || 'application/octet-stream';
+        documentReference.content.push({
+          attachment: {
+            contentType: mimeType,
+            url: imageUrl,
+            size: fileSizeBytes,
+            title: 'file',
+            creation: new Date().toISOString()
+          }
+        });
+      }
 
       if (patientId) {
         documentReference.subject = { reference: `Patient/${patientId}` };
@@ -164,9 +191,9 @@ module.exports = {
       // 回傳成功響應
       return res.ok({
         filename: filenameFull,
-        size: metadata.size,
+        size: fileSizeBytes,
         path: `/images/${filenameFull}`,
-        'path-thumbnail': `/images/${thumbnailFilename}`,
+        'path-thumbnail': isImage ? `/images/${thumbnailFilename}` : null,
         timestamp: Date.now(),
         url: imageUrl,
         delete: `${apiBaseUrl}/delete/${fhirResponse.id}`,
