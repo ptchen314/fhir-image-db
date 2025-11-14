@@ -65,7 +65,7 @@ module.exports = {
       let imageType = null;
       let isImage = false;
       try {
-        metadata = await sharp(fileBuffer).metadata();
+        metadata = await sharp(fileBuffer, { failOn: 'none' }).metadata();
         imageType = metadata.format;
         isImage = ['jpeg', 'png', 'gif', 'webp'].includes(imageType);
       } catch (unusedE) {
@@ -103,11 +103,11 @@ module.exports = {
       // 將原始圖和縮圖寫入檔案系統
       // 使用 withMetadata() 保留 EXIF 資訊（包括 Orientation）
       if (isImage) {
-        await sharp(fileBuffer)
+        await sharp(fileBuffer, { failOn: 'none' })
           .withMetadata()
           .toFile(imagePath);
 
-        await sharp(fileBuffer)
+        await sharp(fileBuffer, { failOn: 'none' })
           .resize(128, 128)
           .withMetadata()
           .toFile(thumbnailPath);
